@@ -30,7 +30,13 @@ st.markdown(
     .hero-ok { background:#66BB6A; color:white; padding:16px; border-radius:12px; text-align:center; font-size:1.4rem; font-weight:700; }
     .hero-low { background:#FFA726; color:white; padding:16px; border-radius:12px; text-align:center; font-size:1.4rem; font-weight:700; }
     .hero-empty { background:#EF5350; color:white; padding:16px; border-radius:12px; text-align:center; font-size:1.4rem; font-weight:700; }
-    .qty-big { font-size: 2.8rem; font-weight: 800; line-height: 1.1; }
+    .qty-big { font-size: 2.8rem; font-weight: 800; line-height: 1.1; text-align:center; }
+    .calc-display {
+        background:#fff; border:3px solid #333; border-radius:12px;
+        padding:12px 16px; font-size:2.4rem; font-weight:800;
+        text-align:right; margin-bottom:10px; color:#333;
+        font-family: Consolas, monospace;
+    }
     div.stButton > button {
         border-radius: 14px; font-weight: 700; min-height: 3rem; border: 0;
     }
@@ -40,11 +46,10 @@ st.markdown(
 )
 
 # ---------------------------------------------------------------------------
-# Costanti colonne
+# Costanti
 # ---------------------------------------------------------------------------
 COLONNA_NOME = "Nome Prodotto"
 COLONNA_CATEGORIA = "Categoria"
-COLONNE_EXTRA = ["Codice", "Codice a Barre", "Prezzo", "Quantita", "Giacenza", "Scorta minima", "Foto"]
 NOMI_FOTO = ["foto", "immagine", "image", "img", "picture", "url foto", "link foto"]
 
 
@@ -120,8 +125,7 @@ def normalizza_colonne(df):
         for c in df.columns
         if not (c.startswith("Unnamed") or c == "" or c.lower() == "nan")
     ]
-    df = df.loc[:, keep].dropna(axis=1, how="all")
-    return df
+    return df.loc[:, keep].dropna(axis=1, how="all")
 
 
 def to_int(val, default=0):
@@ -165,9 +169,12 @@ def dataframe_da_sorgente(file_excel, link_drive, header_row):
 
 
 def prepara_df_lavoro(df_raw):
-    """Converte il foglio in un DataFrame standard per l'app."""
     df = normalizza_colonne(df_raw)
-    col_nome = trova_colonna(df, COLONNA_NOME) or trova_colonna(df, "Prodotto") or trova_colonna(df, "Nome")
+    col_nome = (
+        trova_colonna(df, COLONNA_NOME)
+        or trova_colonna(df, "Prodotto")
+        or trova_colonna(df, "Nome")
+    )
     col_cat = trova_colonna(df, COLONNA_CATEGORIA)
     if col_nome is None:
         raise ValueError(
@@ -190,7 +197,6 @@ def prepara_df_lavoro(df_raw):
         if col_foto:
             break
     if col_foto is None:
-        # cerca colonna con URL
         for c in df.columns:
             campione = df[c].dropna().astype(str).head(12)
             if not len(campione):
@@ -209,7 +215,6 @@ def prepara_df_lavoro(df_raw):
         if formato.lower() == "nan":
             formato = ""
         giacenza = to_int(r.get(col_gia), 0) if col_gia else 0
-        # se non c'e' Giacenza e Quantita e' numerica, usala come stock
         if not col_gia and col_fmt:
             raw = r.get(col_fmt)
             try:
@@ -224,7 +229,8 @@ def prepara_df_lavoro(df_raw):
             {
                 "id": len(rows) + 1,
                 "Nome Prodotto": nome,
-                "Categoria": (str(r.get(col_cat, "")).strip() if col_cat else "") or "Senza categoria",
+                "Categoria": (str(r.get(col_cat, "")).strip() if col_cat else "")
+                or "Senza categoria",
                 "Codice": str(r.get(col_cod, "")).strip() if col_cod else "",
                 "Codice a Barre": str(r.get(col_bar, "")).strip() if col_bar else "",
                 "Prezzo": str(r.get(col_pre, "")).strip() if col_pre else "",
@@ -238,11 +244,18 @@ def prepara_df_lavoro(df_raw):
     if out.empty:
         out = pd.DataFrame(
             columns=[
-                "id", "Nome Prodotto", "Categoria", "Codice", "Codice a Barre",
-                "Prezzo", "Formato", "Giacenza", "Scorta minima", "Foto",
+                "id",
+                "Nome Prodotto",
+                "Categoria",
+                "Codice",
+                "Codice a Barre",
+                "Prezzo",
+                "Formato",
+                "Giacenza",
+                "Scorta minima",
+                "Foto",
             ]
         )
-    # pulizia nan testuali
     for c in ["Codice", "Codice a Barre", "Prezzo", "Formato", "Categoria"]:
         out[c] = out[c].replace({"nan": "", "None": ""}).fillna("")
     return out
@@ -255,7 +268,19 @@ def init_state():
         "loaded": False,
         "filter_mode": "all",
         "selected_id": None,
-        "msg": "",
+        "last_link": "",
+        # tastierino calcolatrice
+        "calc_buffer": "",
+        "calc_target": None,  # "giacenza" | "scorta" | "move"
+        "form_nome": "",
+        "form_cat": "",
+        "form_codice": "",
+        "form_bar": "",
+        "form_prezzo": "",
+        "form_formato": "",
+        "form_foto": "",
+        "form_giacenza": 0,
+        "form_scorta": 5,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -264,7 +289,8 @@ def init_state():
 
 def go(page):
     st.session_state.page = page
-    st.session_state.msg = ""
+    st.session_state.calc_buffer = ""
+    st.session_state.calc_target = None
 
 
 def get_df():
@@ -289,8 +315,15 @@ def counts(df):
 def df_to_xlsx_bytes(df):
     export = df.copy()
     cols = [
-        "Categoria", "Foto", "Nome Prodotto", "Codice a Barre", "Codice",
-        "Formato", "Prezzo", "Giacenza", "Scorta minima",
+        "Categoria",
+        "Foto",
+        "Nome Prodotto",
+        "Codice a Barre",
+        "Codice",
+        "Formato",
+        "Prezzo",
+        "Giacenza",
+        "Scorta minima",
     ]
     for c in cols:
         if c not in export.columns:
@@ -303,12 +336,115 @@ def df_to_xlsx_bytes(df):
 
 
 # ---------------------------------------------------------------------------
+# TASTIERINO CALCOLATRICE
+# ---------------------------------------------------------------------------
+def calc_display_value():
+    buf = st.session_state.calc_buffer
+    if buf == "":
+        return "0"
+    return buf
+
+
+def calc_press(key):
+    """key: '0'-'9', 'C', 'BS'"""
+    buf = st.session_state.calc_buffer
+    if key == "C":
+        st.session_state.calc_buffer = ""
+        return
+    if key == "BS":
+        st.session_state.calc_buffer = buf[:-1]
+        return
+    if key.isdigit():
+        if buf == "0":
+            buf = ""
+        # limite cifre
+        if len(buf) >= 8:
+            return
+        st.session_state.calc_buffer = buf + key
+
+
+def calc_value_int():
+    buf = st.session_state.calc_buffer
+    if buf == "":
+        return 0
+    try:
+        return max(0, int(buf))
+    except Exception:
+        return 0
+
+
+def render_calculator(title="Inserisci quantita"):
+    """Mostra display + griglia 1-9, C 0 ⌫. Ritorna True se premuto CONFERMA."""
+    st.markdown(f"**{title}**")
+    st.markdown(
+        f'<div class="calc-display">{calc_display_value()}</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Riga 7 8 9
+    r1 = st.columns(3)
+    for col, digit in zip(r1, ["7", "8", "9"]):
+        with col:
+            if st.button(digit, key=f"calc_{st.session_state.calc_target}_{digit}", use_container_width=True):
+                calc_press(digit)
+                st.rerun()
+
+    # Riga 4 5 6
+    r2 = st.columns(3)
+    for col, digit in zip(r2, ["4", "5", "6"]):
+        with col:
+            if st.button(digit, key=f"calc_{st.session_state.calc_target}_{digit}", use_container_width=True):
+                calc_press(digit)
+                st.rerun()
+
+    # Riga 1 2 3
+    r3 = st.columns(3)
+    for col, digit in zip(r3, ["1", "2", "3"]):
+        with col:
+            if st.button(digit, key=f"calc_{st.session_state.calc_target}_{digit}", use_container_width=True):
+                calc_press(digit)
+                st.rerun()
+
+    # Riga C 0 ⌫
+    r4 = st.columns(3)
+    with r4[0]:
+        if st.button("C", key=f"calc_{st.session_state.calc_target}_C", use_container_width=True):
+            calc_press("C")
+            st.rerun()
+    with r4[1]:
+        if st.button("0", key=f"calc_{st.session_state.calc_target}_0", use_container_width=True):
+            calc_press("0")
+            st.rerun()
+    with r4[2]:
+        if st.button("⌫", key=f"calc_{st.session_state.calc_target}_BS", use_container_width=True):
+            calc_press("BS")
+            st.rerun()
+
+    confirmed = st.button(
+        "CONFERMA",
+        key=f"calc_{st.session_state.calc_target}_OK",
+        type="primary",
+        use_container_width=True,
+    )
+    return confirmed
+
+
+def start_calc(target, initial=None):
+    """Attiva il tastierino per un campo (giacenza / scorta / move)."""
+    st.session_state.calc_target = target
+    if initial is None or initial == 0:
+        st.session_state.calc_buffer = ""
+    else:
+        st.session_state.calc_buffer = str(int(initial))
+
+
+# ---------------------------------------------------------------------------
 # Init
 # ---------------------------------------------------------------------------
 init_state()
 
 # ---------------------------------------------------------------------------
-# Sidebar: carica dati
+# Sidebar
 # ---------------------------------------------------------------------------
 with st.sidebar:
     st.header("Configurazione")
@@ -318,7 +454,9 @@ with st.sidebar:
         placeholder="https://docs.google.com/spreadsheets/d/...",
     )
     file_excel = st.file_uploader("Oppure file Excel (.xlsx)", type=["xlsx"])
-    header_row = st.number_input("Riga intestazioni", min_value=1, max_value=50, value=1, step=1)
+    header_row = st.number_input(
+        "Riga intestazioni", min_value=1, max_value=50, value=1, step=1
+    )
 
     c1, c2 = st.columns(2)
     with c1:
@@ -357,39 +495,47 @@ with st.sidebar:
         )
         st.info(
             "Le modifiche restano finche' tieni aperta la pagina. "
-            "Scarica l'Excel per conservarle, poi rimpiazza il file su Drive se serve."
+            "Scarica l'Excel per conservarle."
         )
+
 
 # ---------------------------------------------------------------------------
 # HOME
 # ---------------------------------------------------------------------------
 def page_home():
     st.title("Magazzino Cecap")
-    st.caption("Interfaccia web stile Kids — consultabile e modificabile online")
+    st.caption("Interfaccia web stile Kids — modificabile online")
 
     df = get_df()
     if df is None:
         st.info(
-            "Benvenuto! Dal menu a sinistra carica il foglio Google oppure un file Excel, "
-            "poi usa i bottoni qui sotto."
+            "Benvenuto! Dal menu a sinistra carica il foglio Google oppure un file Excel."
         )
         st.markdown(
             """
-**Come condividere l'app**
+**Condivisione**
 1. Usa l'indirizzo Streamlit Cloud dell'app
-2. Crea un collegamento sul desktop a quell'indirizzo
-3. Invia lo stesso link ad altri (devono poter aprire il foglio se e' su Drive)
+2. Crea un collegamento sul desktop a quell'URL
+3. Invia lo stesso link ad altri
 """
         )
         return
 
     total, ok, low, empty = counts(df)
     if empty:
-        st.markdown(f'<div class="hero-empty">{empty} prodotti FINITI</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="hero-empty">{empty} prodotti FINITI</div>',
+            unsafe_allow_html=True,
+        )
     elif low:
-        st.markdown(f'<div class="hero-low">{low} prodotti in SCARSEZZA</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="hero-low">{low} prodotti in SCARSEZZA</div>',
+            unsafe_allow_html=True,
+        )
     else:
-        st.markdown('<div class="hero-ok">Tutto OK</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="hero-ok">Tutto OK</div>', unsafe_allow_html=True
+        )
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Totale", total)
@@ -401,6 +547,18 @@ def page_home():
     b1, b2, b3 = st.columns(3)
     with b1:
         if st.button("AGGIUNGI PRODOTTO", use_container_width=True):
+            # reset form
+            st.session_state.form_nome = ""
+            st.session_state.form_cat = ""
+            st.session_state.form_codice = ""
+            st.session_state.form_bar = ""
+            st.session_state.form_prezzo = ""
+            st.session_state.form_formato = ""
+            st.session_state.form_foto = ""
+            st.session_state.form_giacenza = 0
+            st.session_state.form_scorta = 5
+            st.session_state.calc_buffer = ""
+            st.session_state.calc_target = None
             go("add")
             st.rerun()
         st.markdown(
@@ -420,7 +578,7 @@ def page_home():
             go("move")
             st.rerun()
         st.markdown(
-            "<div style='background:#FFA726;color:white;text-align:center;padding:8px;border-radius:10px;margin-top:-8px'>+ / - giacenza</div>",
+            "<div style='background:#FFA726;color:white;text-align:center;padding:8px;border-radius:10px;margin-top:-8px'>Tastierino giacenza</div>",
             unsafe_allow_html=True,
         )
 
@@ -470,7 +628,9 @@ def page_view():
             st.session_state.filter_mode = "empty"
             st.rerun()
     with f4:
-        cats = ["(tutte)"] + sorted(df["Categoria"].dropna().astype(str).unique().tolist())
+        cats = ["(tutte)"] + sorted(
+            df["Categoria"].dropna().astype(str).unique().tolist()
+        )
         cat = st.selectbox("Categoria", cats, label_visibility="collapsed")
 
     mode = st.session_state.filter_mode
@@ -489,17 +649,10 @@ def page_view():
 
     cols = st.columns(3)
     for i, row in enumerate(view.itertuples(index=False)):
-        d = row._asdict() if hasattr(row, "_asdict") else dict(zip(view.columns, row))
-        # compat tuple
-        if not isinstance(d, dict):
-            d = {c: getattr(row, c) for c in view.columns}
-        # itertuples rinomina spazi
         def g(name, default=""):
             key = name.replace(" ", "_")
             if hasattr(row, key):
                 return getattr(row, key)
-            if name in view.columns:
-                return view.loc[view["id"] == getattr(row, "id"), name].values[0]
             return default
 
         pid = g("id")
@@ -512,29 +665,29 @@ def page_view():
         css = {"ok": "card-ok", "low": "card-low", "empty": "card-empty"}[stato]
 
         with cols[i % 3]:
-            with st.container():
-                st.markdown(f'<div class="{css}">', unsafe_allow_html=True)
-                if foto and isinstance(foto, str) and foto.startswith("http"):
-                    st.image(foto, use_container_width=True)
-                st.markdown(f"**{nome}**")
-                st.caption(str(catv))
-                st.markdown(
-                    f'<div class="qty-big" style="color:{color}">{qty}</div>',
-                    unsafe_allow_html=True,
-                )
-                st.markdown(f"**{label}** · min {minq}")
-                c_a, c_b = st.columns(2)
-                with c_a:
-                    if st.button("Dettaglio", key=f"det_{pid}", use_container_width=True):
-                        st.session_state.selected_id = int(pid)
-                        go("detail")
-                        st.rerun()
-                with c_b:
-                    if st.button("Muovi", key=f"mv_{pid}", use_container_width=True):
-                        st.session_state.selected_id = int(pid)
-                        go("move_one")
-                        st.rerun()
-                st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown(f'<div class="{css}">', unsafe_allow_html=True)
+            if foto and isinstance(foto, str) and str(foto).startswith("http"):
+                st.image(str(foto), use_container_width=True)
+            st.markdown(f"**{nome}**")
+            st.caption(str(catv))
+            st.markdown(
+                f'<div class="qty-big" style="color:{color}">{qty}</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(f"**{label}** · min {minq}")
+            c_a, c_b = st.columns(2)
+            with c_a:
+                if st.button("Dettaglio", key=f"det_{pid}", use_container_width=True):
+                    st.session_state.selected_id = int(pid)
+                    go("detail")
+                    st.rerun()
+            with c_b:
+                if st.button("Muovi", key=f"mv_{pid}", use_container_width=True):
+                    st.session_state.selected_id = int(pid)
+                    start_calc("move", qty)
+                    go("move_one")
+                    st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
             st.write("")
 
 
@@ -572,20 +725,37 @@ def page_detail():
     with right:
         st.subheader(r["Nome Prodotto"])
         st.write(f"Categoria: **{r['Categoria']}**")
-        st.markdown(f'<div class="qty-big" style="color:{color}">{qty}</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="qty-big" style="color:{color}">{qty}</div>',
+            unsafe_allow_html=True,
+        )
         st.markdown(f"### {label}")
         st.write(f"Scorta minima: {minq}")
-        st.write(f"Codice: {r.get('Codice','')} | Barcode: {r.get('Codice a Barre','')}")
+        st.write(
+            f"Codice: {r.get('Codice','')} | Barcode: {r.get('Codice a Barre','')}"
+        )
         st.write(f"Prezzo: {r.get('Prezzo','')} | Formato: {r.get('Formato','')}")
     st.markdown("</div>", unsafe_allow_html=True)
 
     c1, c2, c3 = st.columns(3)
     with c1:
         if st.button("Modifica", use_container_width=True):
+            st.session_state.form_nome = str(r.get("Nome Prodotto") or "")
+            st.session_state.form_cat = str(r.get("Categoria") or "")
+            st.session_state.form_codice = str(r.get("Codice") or "")
+            st.session_state.form_bar = str(r.get("Codice a Barre") or "")
+            st.session_state.form_prezzo = str(r.get("Prezzo") or "")
+            st.session_state.form_formato = str(r.get("Formato") or "")
+            st.session_state.form_foto = str(r.get("Foto") or "") if r.get("Foto") else ""
+            st.session_state.form_giacenza = qty
+            st.session_state.form_scorta = minq
+            st.session_state.calc_target = None
+            st.session_state.calc_buffer = ""
             go("edit")
             st.rerun()
     with c2:
         if st.button("Muovi quantita", use_container_width=True):
+            start_calc("move", qty)
             go("move_one")
             st.rerun()
     with c3:
@@ -598,7 +768,7 @@ def page_detail():
 
 
 # ---------------------------------------------------------------------------
-# MUOVI (lista o singolo)
+# MUOVI
 # ---------------------------------------------------------------------------
 def page_move_select():
     st.title("Muovi quantita")
@@ -609,21 +779,24 @@ def page_move_select():
     if df is None or df.empty:
         st.warning("Nessun prodotto.")
         return
-    st.caption("Scegli un prodotto")
+    st.caption("Scegli un prodotto, poi digita la nuova giacenza sul tastierino")
     for _, r in df.sort_values("Giacenza").iterrows():
         qty = to_int(r["Giacenza"], 0)
         minq = to_int(r["Scorta minima"], 5)
         _, label, _ = status_of(qty, minq)
-        cols = st.columns([4, 1, 1])
-        cols[0].write(f"**{r['Nome Prodotto']}** — {r['Categoria']} — giacenza **{qty}** ({label})")
-        if cols[2].button("Scegli", key=f"pick_{r['id']}"):
+        cols = st.columns([4, 1])
+        cols[0].write(
+            f"**{r['Nome Prodotto']}** — {r['Categoria']} — giacenza **{qty}** ({label})"
+        )
+        if cols[1].button("Scegli", key=f"pick_{r['id']}"):
             st.session_state.selected_id = int(r["id"])
+            start_calc("move", qty)
             go("move_one")
             st.rerun()
 
 
 def page_move_one():
-    st.title("Aggiorna giacenza")
+    st.title("Imposta giacenza")
     if st.button("Indietro"):
         go("move")
         st.rerun()
@@ -643,42 +816,33 @@ def page_move_one():
     minq = to_int(r["Scorta minima"], 5)
     stato, label, color = status_of(qty, minq)
 
-    if r.get("Foto") and str(r.get("Foto")).startswith("http"):
-        st.image(str(r["Foto"]), width=220)
-    st.subheader(r["Nome Prodotto"])
-    st.markdown(f'<div class="qty-big" style="color:{color}">{qty}</div>', unsafe_allow_html=True)
-    st.markdown(f"**{label}** · scorta minima {minq}")
+    left, right = st.columns([1, 1])
+    with left:
+        if r.get("Foto") and str(r.get("Foto")).startswith("http"):
+            st.image(str(r["Foto"]), width=220)
+        st.subheader(r["Nome Prodotto"])
+        st.markdown(
+            f'<div class="qty-big" style="color:{color}">Attuale: {qty}</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(f"**{label}** · scorta minima {minq}")
 
-    def apply_delta(delta):
-        d = get_df().copy()
-        j = d.index[d["id"] == pid][0]
-        d.at[j, "Giacenza"] = max(0, to_int(d.at[j, "Giacenza"], 0) + delta)
-        set_df(d)
-
-    row = st.columns(6)
-    for col, delta, lab in zip(
-        row,
-        [-10, -5, -1, 1, 5, 10],
-        ["-10", "-5", "-1", "+1", "+5", "+10"],
-    ):
-        with col:
-            if st.button(lab, use_container_width=True, key=f"d_{delta}"):
-                apply_delta(delta)
-                st.rerun()
-
-    st.divider()
-    new_q = st.number_input("Imposta giacenza esatta", min_value=0, value=qty, step=1)
-    if st.button("Imposta", type="primary"):
-        d = get_df().copy()
-        j = d.index[d["id"] == pid][0]
-        d.at[j, "Giacenza"] = int(new_q)
-        set_df(d)
-        st.success("Giacenza aggiornata")
-        st.rerun()
+    with right:
+        if st.session_state.calc_target != "move":
+            start_calc("move", qty)
+        if render_calculator("Nuova giacenza (tastierino)"):
+            new_q = calc_value_int()
+            d = get_df().copy()
+            j = d.index[d["id"] == pid][0]
+            d.at[j, "Giacenza"] = new_q
+            set_df(d)
+            st.success(f"Giacenza impostata a {new_q}")
+            st.session_state.calc_buffer = str(new_q)
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
-# ADD / EDIT
+# ADD / EDIT con tastierino
 # ---------------------------------------------------------------------------
 def page_add_edit(edit=False):
     st.title("Modifica prodotto" if edit else "Aggiungi prodotto")
@@ -688,72 +852,115 @@ def page_add_edit(edit=False):
 
     df = get_df()
     if df is None:
-        # crea df vuoto
         set_df(
             pd.DataFrame(
                 columns=[
-                    "id", "Nome Prodotto", "Categoria", "Codice", "Codice a Barre",
-                    "Prezzo", "Formato", "Giacenza", "Scorta minima", "Foto",
+                    "id",
+                    "Nome Prodotto",
+                    "Categoria",
+                    "Codice",
+                    "Codice a Barre",
+                    "Prezzo",
+                    "Formato",
+                    "Giacenza",
+                    "Scorta minima",
+                    "Foto",
                 ]
             )
         )
         df = get_df()
 
-    initial = {
-        "Nome Prodotto": "",
-        "Categoria": "",
-        "Codice": "",
-        "Codice a Barre": "",
-        "Prezzo": "",
-        "Formato": "",
-        "Giacenza": 0,
-        "Scorta minima": 5,
-        "Foto": "",
-    }
-    pid = None
-    if edit:
-        pid = st.session_state.selected_id
-        match = df[df["id"] == pid]
-        if match.empty:
-            st.error("Prodotto non trovato")
-            return
-        r = match.iloc[0]
-        for k in initial:
-            initial[k] = r.get(k, initial[k])
-            if pd.isna(initial[k]):
-                initial[k] = "" if k not in ("Giacenza", "Scorta minima") else 0
+    pid = st.session_state.selected_id if edit else None
 
-    with st.form("form_prod"):
-        nome = st.text_input("Nome prodotto", value=str(initial["Nome Prodotto"] or ""))
-        cat = st.text_input("Categoria", value=str(initial["Categoria"] or ""))
-        c1, c2 = st.columns(2)
-        with c1:
-            codice = st.text_input("Codice", value=str(initial["Codice"] or ""))
-            prezzo = st.text_input("Prezzo", value=str(initial["Prezzo"] or ""))
-            gia = st.number_input("Giacenza", min_value=0, value=to_int(initial["Giacenza"], 0))
-        with c2:
-            bar = st.text_input("Codice a barre", value=str(initial["Codice a Barre"] or ""))
-            fmt = st.text_input("Formato / confezione", value=str(initial["Formato"] or ""))
-            scorta = st.number_input("Scorta minima", min_value=0, value=to_int(initial["Scorta minima"], 5))
-        foto = st.text_input("URL foto (opzionale)", value=str(initial["Foto"] or "") if initial["Foto"] else "")
-        ok = st.form_submit_button("SALVA", type="primary", use_container_width=True)
+    # Campi testo
+    st.session_state.form_nome = st.text_input(
+        "Nome prodotto", value=st.session_state.form_nome
+    )
+    st.session_state.form_cat = st.text_input(
+        "Categoria", value=st.session_state.form_cat
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        st.session_state.form_codice = st.text_input(
+            "Codice", value=st.session_state.form_codice
+        )
+        st.session_state.form_prezzo = st.text_input(
+            "Prezzo", value=st.session_state.form_prezzo
+        )
+    with c2:
+        st.session_state.form_bar = st.text_input(
+            "Codice a barre", value=st.session_state.form_bar
+        )
+        st.session_state.form_formato = st.text_input(
+            "Formato / confezione", value=st.session_state.form_formato
+        )
+    st.session_state.form_foto = st.text_input(
+        "URL foto (opzionale)", value=st.session_state.form_foto
+    )
 
-    if ok:
-        if not nome.strip():
+    st.divider()
+    st.subheader("Quantita (tastierino calcolatrice)")
+
+    gcol, scol = st.columns(2)
+    with gcol:
+        st.markdown(f"**Giacenza attuale:** `{st.session_state.form_giacenza}`")
+        if st.button("Digita GIACENZA", use_container_width=True):
+            start_calc("giacenza", st.session_state.form_giacenza)
+            st.rerun()
+    with scol:
+        st.markdown(f"**Scorta minima attuale:** `{st.session_state.form_scorta}`")
+        if st.button("Digita SCORTA MINIMA", use_container_width=True):
+            start_calc("scorta", st.session_state.form_scorta)
+            st.rerun()
+
+    target = st.session_state.calc_target
+    if target in ("giacenza", "scorta"):
+        titolo = (
+            "Tastierino — Giacenza"
+            if target == "giacenza"
+            else "Tastierino — Scorta minima"
+        )
+        if render_calculator(titolo):
+            val = calc_value_int()
+            if target == "giacenza":
+                st.session_state.form_giacenza = val
+            else:
+                st.session_state.form_scorta = val
+            st.session_state.calc_target = None
+            st.session_state.calc_buffer = ""
+            st.success(f"Valore impostato: {val}")
+            st.rerun()
+
+    st.divider()
+    if st.button("SALVA PRODOTTO", type="primary", use_container_width=True):
+        nome = (st.session_state.form_nome or "").strip()
+        if not nome:
             st.error("Il nome e' obbligatorio")
             return
+        cat = (st.session_state.form_cat or "").strip() or "Senza categoria"
+        codice = (st.session_state.form_codice or "").strip()
+        bar = (st.session_state.form_bar or "").strip()
+        prezzo = (st.session_state.form_prezzo or "").strip()
+        fmt = (st.session_state.form_formato or "").strip()
+        foto_n = normalizza_url_immagine(st.session_state.form_foto) if st.session_state.form_foto else None
+        gia = int(st.session_state.form_giacenza)
+        scorta = int(st.session_state.form_scorta)
+
         d = get_df().copy()
-        foto_n = normalizza_url_immagine(foto) if foto else None
         if edit and pid is not None:
-            j = d.index[d["id"] == pid][0]
-            d.at[j, "Nome Prodotto"] = nome.strip()
-            d.at[j, "Categoria"] = cat.strip() or "Senza categoria"
-            d.at[j, "Codice"] = codice.strip()
-            d.at[j, "Codice a Barre"] = bar.strip()
-            d.at[j, "Prezzo"] = prezzo.strip()
-            d.at[j, "Formato"] = fmt.strip()
-            d.at[j, "Giacenza"] = int(gia)
-            d.at[j, "Scorta minima"] = int(scorta)
+            jlist = d.index[d["id"] == pid]
+            if len(jlist) == 0:
+                st.error("Prodotto non trovato")
+                return
+            j = jlist[0]
+            d.at[j, "Nome Prodotto"] = nome
+            d.at[j, "Categoria"] = cat
+            d.at[j, "Codice"] = codice
+            d.at[j, "Codice a Barre"] = bar
+            d.at[j, "Prezzo"] = prezzo
+            d.at[j, "Formato"] = fmt
+            d.at[j, "Giacenza"] = gia
+            d.at[j, "Scorta minima"] = scorta
             d.at[j, "Foto"] = foto_n
             set_df(d)
             st.success("Prodotto aggiornato")
@@ -764,14 +971,14 @@ def page_add_edit(edit=False):
             new_id = int(d["id"].max()) + 1 if len(d) and "id" in d.columns else 1
             nuova = {
                 "id": new_id,
-                "Nome Prodotto": nome.strip(),
-                "Categoria": cat.strip() or "Senza categoria",
-                "Codice": codice.strip(),
-                "Codice a Barre": bar.strip(),
-                "Prezzo": prezzo.strip(),
-                "Formato": fmt.strip(),
-                "Giacenza": int(gia),
-                "Scorta minima": int(scorta),
+                "Nome Prodotto": nome,
+                "Categoria": cat,
+                "Codice": codice,
+                "Codice a Barre": bar,
+                "Prezzo": prezzo,
+                "Formato": fmt,
+                "Giacenza": gia,
+                "Scorta minima": scorta,
                 "Foto": foto_n,
             }
             d = pd.concat([d, pd.DataFrame([nuova])], ignore_index=True)
@@ -782,7 +989,7 @@ def page_add_edit(edit=False):
 
 
 # ---------------------------------------------------------------------------
-# TABELLA editabile
+# TABELLA
 # ---------------------------------------------------------------------------
 def page_table():
     st.title("Tabella modificabile")
@@ -795,8 +1002,15 @@ def page_table():
         return
 
     show_cols = [
-        "Foto", "Nome Prodotto", "Categoria", "Giacenza", "Scorta minima",
-        "Codice", "Codice a Barre", "Prezzo", "Formato",
+        "Foto",
+        "Nome Prodotto",
+        "Categoria",
+        "Giacenza",
+        "Scorta minima",
+        "Codice",
+        "Codice a Barre",
+        "Prezzo",
+        "Formato",
     ]
     base = df.copy()
     for c in show_cols:
@@ -811,7 +1025,9 @@ def page_table():
         column_config={
             "Foto": st.column_config.ImageColumn("Foto", width="small"),
             "Giacenza": st.column_config.NumberColumn("Giacenza", min_value=0, step=1),
-            "Scorta minima": st.column_config.NumberColumn("Scorta minima", min_value=0, step=1),
+            "Scorta minima": st.column_config.NumberColumn(
+                "Scorta minima", min_value=0, step=1
+            ),
             "id": st.column_config.NumberColumn("id", disabled=True),
         },
         key="editor_main",
@@ -819,7 +1035,6 @@ def page_table():
 
     if st.button("Applica modifiche tabella", type="primary"):
         out = edited.copy()
-        # riassegna id mancanti
         if out["id"].isna().any():
             max_id = int(df["id"].max()) if len(df) else 0
             for i in out.index:
@@ -829,9 +1044,11 @@ def page_table():
         out["id"] = out["id"].astype(int)
         out["Giacenza"] = out["Giacenza"].apply(lambda x: to_int(x, 0))
         out["Scorta minima"] = out["Scorta minima"].apply(lambda x: to_int(x, 5))
-        out["Foto"] = out["Foto"].apply(lambda x: normalizza_url_immagine(x) if pd.notna(x) else None)
+        out["Foto"] = out["Foto"].apply(
+            lambda x: normalizza_url_immagine(x) if pd.notna(x) else None
+        )
         set_df(out)
-        st.success("Modifiche applicate in memoria. Scarica l'Excel dalla sidebar per salvarle.")
+        st.success("Modifiche applicate. Scarica l'Excel dalla sidebar per salvarle.")
         st.rerun()
 
 
@@ -848,7 +1065,7 @@ def page_export():
         st.warning("Nessun dato.")
         return
 
-    st.write("Le modifiche sono in questa sessione del browser. Per conservarle:")
+    st.write("Scarica i dati aggiornati di questa sessione:")
     xbytes = df_to_xlsx_bytes(df)
     st.download_button(
         "Scarica Excel aggiornato (.xlsx)",
@@ -859,7 +1076,6 @@ def page_export():
         use_container_width=True,
     )
 
-    # HTML semplice
     total, ok, low, empty = counts(df)
     rows_html = []
     for _, r in df.sort_values("Nome Prodotto").iterrows():
@@ -868,7 +1084,11 @@ def page_export():
         _, lab, _ = status_of(qty, minq)
         cls = "ok" if lab == "OK" else ("low" if lab == "POCO" else "empty")
         foto = r.get("Foto") or ""
-        img = f'<img src="{foto}" width="60">' if isinstance(foto, str) and foto.startswith("http") else ""
+        img = (
+            f'<img src="{foto}" width="60">'
+            if isinstance(foto, str) and str(foto).startswith("http")
+            else ""
+        )
         nome = str(r["Nome Prodotto"]).replace("<", "&lt;")
         rows_html.append(
             f'<tr class="{cls}"><td>{img}</td><td>{nome}</td><td>{r["Categoria"]}</td>'
@@ -891,11 +1111,6 @@ tr.ok{{background:#C8E6C9}} tr.low{{background:#FFF9C4}} tr.empty{{background:#F
         file_name=f"magazzino_{datetime.now():%Y%m%d_%H%M%S}.html",
         mime="text/html",
         use_container_width=True,
-    )
-
-    st.info(
-        "Dopo il download puoi caricare l'Excel su Google Drive "
-        "(sostituisci il file del foglio oppure importalo) per aggiornare la fonte."
     )
 
 
